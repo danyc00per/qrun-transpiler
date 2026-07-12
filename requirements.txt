@@ -1,0 +1,4 @@
+fastapi
+uvicorn[standard]
+qiskit
+qiskit-qasm3-import
