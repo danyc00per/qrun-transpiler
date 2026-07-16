@@ -19,19 +19,30 @@ app = FastAPI()
 
 # IBM Heron native basis gates (works for ibm_fez / kingston / marrakesh)
 HERON_BASIS = ["rz", "sx", "x", "cz", "id"]
-
 MAX_QASM_CHARS = 20_000   # a legit QRUN circuit is well under this
 MAX_QUBITS = 200          # hard cap after parsing (Heron r2 = 156)
+MAX_COUPLING_PAIRS = 2_000  # Heron r2 has ~176 edges; this is generous headroom
 ALLOWED_OPT_LEVELS = {0, 1, 2}  # level 3 is pathologically expensive — never needed here
+
 
 class TranspileRequest(BaseModel):
     qasm: str = Field(max_length=MAX_QASM_CHARS)
     basis_gates: list[str] | None = None
     optimization_level: int = 1
+    # Which qubits are physically wired together on the target chip.
+    # basis_gates says WHICH gates exist; coupling_map says WHICH PAIRS they can
+    # act on. Without it, transpile() assumes an all-to-all machine and happily
+    # emits e.g. "cz q[0], q[2]" — which IBM then refuses at submission time:
+    #   "the instruction cz on qubits (0, 2) is not supported by the target system"
+    # Given the map, Qiskit inserts the SWAPs needed to route onto real wiring.
+    # Optional: None → previous behaviour, so this deploys in any order.
+    coupling_map: list[list[int]] | None = None
+
 
 @app.get("/")
 def health():
     return {"ok": True, "service": "qrun-transpiler", "status": "alive"}
+
 
 @app.post("/transpile")
 def do_transpile(req: TranspileRequest, x_qrun_key: str | None = Header(default=None)):
@@ -44,9 +55,23 @@ def do_transpile(req: TranspileRequest, x_qrun_key: str | None = Header(default=
             return {"ok": False, "error": f"circuit too large ({circuit.num_qubits} qubits > {MAX_QUBITS})"}
         level = req.optimization_level if req.optimization_level in ALLOWED_OPT_LEVELS else 1
         basis = req.basis_gates or HERON_BASIS
+
+        # Same caps philosophy as the QASM: refuse absurd input rather than let
+        # Qiskit chew on it. A malformed map is worse than no map — routing onto
+        # imaginary wiring produces a circuit the QPU rejects — so we drop it and
+        # fall back to the old behaviour instead of guessing.
+        coupling = req.coupling_map
+        if coupling is not None:
+            if len(coupling) > MAX_COUPLING_PAIRS or not all(
+                isinstance(p, list) and len(p) == 2 and all(isinstance(q, int) and q >= 0 for q in p)
+                for p in coupling
+            ):
+                coupling = None
+
         isa = transpile(
             circuit,
             basis_gates=basis,
+            coupling_map=coupling,
             optimization_level=level,
         )
         return {
@@ -54,6 +79,9 @@ def do_transpile(req: TranspileRequest, x_qrun_key: str | None = Header(default=
             "qasm": dumps(isa),
             "num_qubits": isa.num_qubits,
             "depth": isa.depth(),
+            # Lets the caller confirm the map was actually honoured rather than
+            # silently ignored — the failure mode this whole change exists to fix.
+            "routed": coupling is not None,
         }
     except HTTPException:
         raise
