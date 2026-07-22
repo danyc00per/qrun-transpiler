@@ -47,7 +47,10 @@ def health():
 @app.post("/transpile")
 def do_transpile(req: TranspileRequest, x_qrun_key: str | None = Header(default=None)):
     expected = os.environ.get("TRANSPILER_KEY", "").strip()
-    if expected and (x_qrun_key or "").strip() != expected:
+    # FAIL CLOSED. Previously `if expected and ...`: a missing or mistyped
+    # TRANSPILER_KEY silently made this service public, and the repo is public
+    # so the endpoint is known. No key configured now means nobody gets in.
+    if not expected or (x_qrun_key or "").strip() != expected:
         raise HTTPException(status_code=401, detail="unauthorized")
     try:
         circuit = loads(req.qasm)
