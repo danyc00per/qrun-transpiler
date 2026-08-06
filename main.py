@@ -41,7 +41,9 @@ class TranspileRequest(BaseModel):
 
 @app.get("/")
 def health():
-    return {"ok": True, "service": "qrun-transpiler", "status": "alive"}
+    _k = os.environ.get("TRANSPILER_KEY", "").strip()
+    return {"ok": True, "service": "qrun-transpiler", "status": "alive",
+            "key_configured": bool(_k), "key_len": len(_k)}
 
 
 @app.post("/transpile")
